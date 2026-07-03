@@ -122,6 +122,9 @@ RestartSec=2
 # and relax ProtectSystem — re-verify on the target if you change these.
 NoNewPrivileges=true
 ProtectSystem=strict
+# contax persists its JSON store (external contacts + each user's hidden set) under
+# /var/lib/${SERVICE_ID}; whitelist it as writable despite ProtectSystem=strict (same as mail/icaly).
+ReadWritePaths=/var/lib/${SERVICE_ID}
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
