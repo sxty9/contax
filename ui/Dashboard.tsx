@@ -5,6 +5,7 @@ import {
   Button,
   EmptyState,
   IconButton,
+  Modal,
   Panel,
   SearchField,
   Stack,
@@ -28,6 +29,7 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
   const q = useLiveQuery<ContactsResponse>(() => api.get<ContactsResponse>('contacts'), 15000);
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState<{ open: boolean; contact?: Contact }>({ open: false });
+  const [hiddenOpen, setHiddenOpen] = useState(false);
 
   const contacts = q.data?.contacts ?? [];
   const filtered = useMemo(() => {
@@ -74,9 +76,14 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
     <Stack gap={4}>
       <Stack direction="row" align="center" justify="between" gap={3} wrap>
         <SearchField value={search} onChange={setSearch} placeholder="Kontakte durchsuchen" className="w-72 max-w-full" />
-        <Button variant="primary" iconLeft={<PlusIcon className="h-4 w-4" />} onClick={() => setEditor({ open: true })}>
-          Externen Kontakt hinzufügen
-        </Button>
+        <Stack direction="row" align="center" gap={2} wrap>
+          <Button variant="secondary" iconLeft={<EyeOffIcon className="h-4 w-4" />} onClick={() => setHiddenOpen(true)}>
+            Ausgeblendet{hidden.length ? ` (${hidden.length})` : ''}
+          </Button>
+          <Button variant="primary" iconLeft={<PlusIcon className="h-4 w-4" />} onClick={() => setEditor({ open: true })}>
+            Externen Kontakt hinzufügen
+          </Button>
+        </Stack>
       </Stack>
 
       <Panel title="Kontakte" className="overflow-hidden">
@@ -105,8 +112,20 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
         )}
       </Panel>
 
-      {hidden.length > 0 && (
-        <Panel title={`Ausgeblendet (${hidden.length})`} className="overflow-hidden">
+      <Modal
+        open={hiddenOpen}
+        onOpenChange={(o) => !o && setHiddenOpen(false)}
+        title="Ausgeblendete Kontakte"
+        size="lg"
+        bodyClassName="p-0"
+      >
+        {hidden.length === 0 ? (
+          <EmptyState
+            icon={<EyeOffIcon />}
+            title="Keine ausgeblendeten Kontakte"
+            description="Aus- und wieder eingeblendete interne und externe Kontakte erscheinen hier."
+          />
+        ) : (
           <Stack gap={0}>
             {hidden.map((c) => (
               <ContactRow
@@ -114,13 +133,16 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
                 c={c}
                 hiddenSection
                 onShow={() => setHidden(c, false)}
-                onEdit={() => setEditor({ open: true, contact: c })}
+                onEdit={() => {
+                  setHiddenOpen(false);
+                  setEditor({ open: true, contact: c });
+                }}
                 onDelete={() => remove(c)}
               />
             ))}
           </Stack>
-        </Panel>
-      )}
+        )}
+      </Modal>
 
       <ExternalEditor
         open={editor.open}
