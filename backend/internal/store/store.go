@@ -2,7 +2,7 @@
 // externally-added contacts and their per-user "hidden" set for internal contacts. Internal
 // contacts themselves are NOT stored here — they are computed live from Linux group overlap
 // (visibility) and the holistic profile store (attributes), so contax never keeps a parallel
-// copy of identity. This is a single flat JSON file written atomically (temp + rename), an
+// copy of identity. This is a single flat JSON file written atomically (temp → fsync → rename), an
 // in-memory snapshot guarded by one mutex, exactly like privleg's rights.json: the daemon is
 // the only writer, so that is the whole concurrency story. A missing file means "no data yet".
 package store
@@ -83,14 +83,37 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-// save writes the current state atomically. The caller must hold s.mu.
+// save writes the state atomically: temp file in the same dir → fsync → rename. The fsync is what
+// makes the rename durable — without it a crash can land the rename while the data blocks are still
+// unwritten, leaving a truncated contacts.json (an observable intermediate state). With it, a crash
+// mid-write leaves the previous good state, never a partial one. The caller must hold s.mu.
 func (s *Store) save() error {
 	b, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".contacts-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once the rename succeeds
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path)
