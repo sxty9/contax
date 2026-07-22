@@ -21,6 +21,7 @@ import {
 } from '@holistic/ui';
 import type { Contact, ContactsResponse } from './types';
 import { ExternalEditor } from './ExternalEditor';
+import { GroupsPanel } from './GroupsPanel';
 
 // The contacts dashboard: every visible contact (internal — computed from shared privleg contact
 // groups — plus external, owned by the user), a hidden section, and add/edit/hide/delete actions.
@@ -111,6 +112,8 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
           </Stack>
         )}
       </Panel>
+
+      <GroupsPanel api={api} ui={ui} />
 
       <Modal
         open={hiddenOpen}

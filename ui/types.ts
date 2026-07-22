@@ -19,3 +19,16 @@ export interface Contact {
 export interface ContactsResponse {
   contacts: Contact[];
 }
+
+// A personal contact group as the list/lookup present it — members are fetched separately
+// (groups/<id>/members) so the list stays portioned. This is the entity contax owns and that the
+// shared ContactPicker and sibling services reference by id.
+export interface GroupSummary {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface GroupsResponse {
+  groups: GroupSummary[];
+}
