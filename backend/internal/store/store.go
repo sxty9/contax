@@ -83,10 +83,14 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-// save writes the state atomically: temp file in the same dir → fsync → rename. The fsync is what
-// makes the rename durable — without it a crash can land the rename while the data blocks are still
-// unwritten, leaving a truncated contacts.json (an observable intermediate state). With it, a crash
-// mid-write leaves the previous good state, never a partial one. The caller must hold s.mu.
+// save writes the state with a durable atomic replace: temp file in the same dir → fsync the file →
+// rename it over the target → fsync the dir. The two fsyncs do two different jobs. The file fsync
+// forces the new bytes to disk BEFORE the rename, so the rename can never expose a half-written
+// contacts.json (a torn, partial state). The directory fsync forces the rename ITSELF to disk: a
+// rename only rewrites a directory entry, and until that entry change is fsync'd a crash can
+// silently revert the name to the previous inode — the write would look lost though it "succeeded".
+// With both, a crash leaves either the whole previous state or the whole new one, never a partial or
+// a phantom-reverted write. The caller must hold s.mu.
 func (s *Store) save() error {
 	b, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
@@ -116,7 +120,25 @@ func (s *Store) save() error {
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
+}
+
+// fsyncDir flushes a directory's own metadata so a rename into it survives a crash. Opening the
+// directory read-only and syncing its descriptor is the POSIX way to make the entry change durable;
+// without it the file bytes are on disk but the name still pointing at them may not be.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // ListExternal returns a copy of the owner's external contacts (stable order: creation order).
