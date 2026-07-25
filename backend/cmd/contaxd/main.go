@@ -50,9 +50,9 @@ func main() {
 	inst := instance.New()
 	svc := contacts.New(dir, prof, inst, st)
 
-	// Shared secret for the machine-to-machine internal/ endpoints (e.g. icaly resolving a personal
-	// group's members for calendar sharing). Absent ⇒ those endpoints fail closed (503).
-	internalSecret := readSecret("CONTAX_INTERNAL_SECRET", "CONTAX_INTERNAL_SECRET_FILE")
+	// Shared secret for the machine-to-machine internal/* endpoints (group membership resolution).
+	// Optional: absent => those endpoints serve 503 (fail closed) and the rest of the service runs.
+	internalSecret := loadInternalSecret()
 
 	srv := &http.Server{
 		Handler:           api.New(v, svc, internalSecret).Handler(),
@@ -88,15 +88,16 @@ func getenv(key, def string) string {
 	return def
 }
 
-// readSecret returns a secret from the env var, else from the file named by fileEnv (trimmed).
-func readSecret(env, fileEnv string) string {
-	if v := strings.TrimSpace(os.Getenv(env)); v != "" {
-		return v
-	}
-	if path := strings.TrimSpace(os.Getenv(fileEnv)); path != "" {
+// loadInternalSecret reads the shared M2M secret for the internal/* endpoints, preferring a file
+// (CONTAX_INTERNAL_SECRET_FILE) over an inline value (CONTAX_INTERNAL_SECRET). It is optional:
+// "" leaves those endpoints disabled, so the service still boots on a host that never wired it.
+func loadInternalSecret() string {
+	if path := strings.TrimSpace(os.Getenv("CONTAX_INTERNAL_SECRET_FILE")); path != "" {
 		if b, err := os.ReadFile(path); err == nil {
-			return strings.TrimSpace(string(b))
+			if s := strings.TrimSpace(string(b)); s != "" {
+				return s
+			}
 		}
 	}
-	return ""
+	return strings.TrimSpace(os.Getenv("CONTAX_INTERNAL_SECRET"))
 }

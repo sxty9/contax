@@ -24,26 +24,28 @@ const (
 	base    = "/api/services/contax/"
 	service = "contax"
 	version = "0.1.0"
+
+	// internalSecretHeader carries the shared machine-to-machine secret on the internal/* endpoints
+	// (no browser session). A sibling service (e.g. hosuto) presents it to resolve group membership.
+	internalSecretHeader = "X-Contax-Internal-Secret"
 )
 
 // emailRE is a deliberately permissive sanity check — real validation is delivery's job.
 var emailRE = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 
-// groupIDRe matches the ids store.newGroupID mints ("grp-" + 8 hex chars).
-var groupIDRe = regexp.MustCompile(`^grp-[0-9a-f]{8}$`)
-
 // Server wires the session verifier and the contacts read-model into HTTP handlers.
 type Server struct {
-	v              *auth.Verifier
-	svc            *contacts.Service
-	gravatr        *http.Client
-	internalSecret string // shared secret for the machine-to-machine internal/ endpoints ("" disables)
+	v       *auth.Verifier
+	svc     *contacts.Service
+	gravatr *http.Client
+	// internal is the shared secret guarding the machine-to-machine internal/* endpoints. "" leaves
+	// them disabled (fail closed) — a host that never provisioned the secret simply serves 503 there.
+	internal string
 }
 
-// New builds a server. internalSecret guards the service-to-service internal/ endpoints (e.g. icaly
-// resolving a personal group's members for calendar sharing); "" disables them (fail closed).
+// New builds a server. internalSecret guards the M2M internal/* endpoints; "" disables them.
 func New(v *auth.Verifier, svc *contacts.Service, internalSecret string) *Server {
-	return &Server{v: v, svc: svc, gravatr: &http.Client{Timeout: 6 * time.Second}, internalSecret: internalSecret}
+	return &Server{v: v, svc: svc, gravatr: &http.Client{Timeout: 6 * time.Second}, internal: internalSecret}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -65,25 +67,20 @@ func (s *Server) Handler() http.Handler {
 	// Internal contacts can only be hidden/unhidden (never deleted or edited).
 	mux.HandleFunc("POST "+base+"internal/{username}/hide", s.guard(true, s.hideInternal(true)))
 	mux.HandleFunc("POST "+base+"internal/{username}/unhide", s.guard(true, s.hideInternal(false)))
-	// Personal ("contax-level") contact groups the caller owns or belongs to. Reads need only a
-	// session; mutations add CSRF. Intra-group authority (owner/admin/member) is enforced in the
-	// service layer — there is no privleg right for this.
+	// Personal contact groups — the entity contax owns for the shared ContactPicker and sibling
+	// services. Session-gated CRUD; mutations add CSRF. GET members backs ContactPicker.onExpandGroup.
 	mux.HandleFunc("GET "+base+"groups", s.guard(false, s.listGroups))
 	mux.HandleFunc("POST "+base+"groups", s.guard(true, s.createGroup))
-	mux.HandleFunc("GET "+base+"groups/{id}", s.guard(false, s.getGroup))
 	mux.HandleFunc("PUT "+base+"groups/{id}", s.guard(true, s.renameGroup))
 	mux.HandleFunc("DELETE "+base+"groups/{id}", s.guard(true, s.deleteGroup))
-	// Expansion for mail/icaly (reached cross-service via apiFor('contax')): group -> member contacts.
 	mux.HandleFunc("GET "+base+"groups/{id}/members", s.guard(false, s.groupMembers))
 	mux.HandleFunc("POST "+base+"groups/{id}/members", s.guard(true, s.addGroupMember))
-	mux.HandleFunc("PUT "+base+"groups/{id}/members", s.guard(true, s.setGroupMemberRole))
-	mux.HandleFunc("DELETE "+base+"groups/{id}/members", s.guard(true, s.removeGroupMember))
-	mux.HandleFunc("POST "+base+"groups/{id}/transfer", s.guard(true, s.transferGroup))
+	mux.HandleFunc("DELETE "+base+"groups/{id}/members/{ref}", s.guard(true, s.removeGroupMember))
+	// Machine-to-machine: resolve a group's internal member usernames by id. Shared-secret auth, no
+	// session — a sibling service keeps a "shared with this group" membership live through it.
+	mux.HandleFunc("GET "+base+"internal/groups/{id}/members", s.internalGroupMembers)
 	// Server-side Gravatar proxy for external contacts (no third-party origin in the browser).
 	mux.HandleFunc("GET "+base+"avatar/ext", s.guard(false, s.avatarExt))
-	// Machine-to-machine: resolve a personal group's internal member usernames. Shared-secret auth
-	// (never a session) — icaly's calendar sharing calls this to live-resolve contax-group grants.
-	mux.HandleFunc("GET "+base+"internal/groups/{id}/members", s.internalGroupMembers)
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -127,9 +124,10 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	}
 	q := r.URL.Query().Get("q")
 	resp := map[string]any{"contacts": s.svc.Lookup(u, q, limit)}
-	// Opt-in so the default typeahead stays byte-compatible for callers that don't want groups.
-	if r.URL.Query().Get("includeGroups") == "1" {
-		resp["groups"] = s.svc.LookupGroups(u, q, limit)
+	// The shared ContactPicker asks for groups with includeGroups=1; a picked group is expanded via
+	// GET groups/{id}/members. Hosts that don't opt in never see (and never need) the groups key.
+	if v := r.URL.Query().Get("includeGroups"); v == "1" || v == "true" {
+		resp["groups"] = s.svc.LookupGroups(u.Username, q)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -218,62 +216,21 @@ func (s *Server) hideInternal(hidden bool) handler {
 	}
 }
 
-// --- personal groups ---
+// --- personal contact groups ---
 
-// groupID reads and validates the {id} path value, writing a 404 on a malformed id.
-func groupID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	id := r.PathValue("id")
-	if !groupIDRe.MatchString(id) {
-		writeErr(w, http.StatusNotFound, "Group not found")
-		return "", false
-	}
-	return id, true
-}
-
-// groupNameBody is the payload for create/rename.
-type groupNameBody struct {
+type groupBody struct {
 	Name string `json:"name"`
 }
 
-// decodeGroupName decodes + sanitises a group name (trim, collapse whitespace, cap 64 runes).
-func decodeGroupName(w http.ResponseWriter, r *http.Request) (string, bool) {
-	var b groupNameBody
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&b); err != nil && err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "Invalid request body")
-		return "", false
-	}
-	name := strings.Join(strings.Fields(b.Name), " ")
-	if runes := []rune(name); len(runes) > 64 {
-		name = strings.TrimSpace(string(runes[:64]))
-	}
-	if name == "" {
-		writeErr(w, http.StatusBadRequest, "A group name is required")
-		return "", false
-	}
-	return name, true
-}
-
-// memberBody is the payload for add-member (kind, ref) and set-role (kind, ref, role).
+// memberBody is what the ContactPicker yields for one member: an internal user carries a username;
+// an external contact carries only its address.
 type memberBody struct {
-	Kind string `json:"kind"`
-	Ref  string `json:"ref"`
-	Role string `json:"role"`
-}
-
-func decodeMember(w http.ResponseWriter, r *http.Request) (memberBody, bool) {
-	var b memberBody
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&b); err != nil && err != io.EOF {
-		writeErr(w, http.StatusBadRequest, "Invalid request body")
-		return memberBody{}, false
-	}
-	b.Kind = strings.TrimSpace(b.Kind)
-	b.Ref = strings.TrimSpace(b.Ref)
-	b.Role = strings.TrimSpace(b.Role)
-	return b, true
+	Username string `json:"username"`
+	Email    string `json:"email"`
 }
 
 func (s *Server) listGroups(w http.ResponseWriter, _ *http.Request, u *auth.User) {
-	writeJSON(w, http.StatusOK, map[string]any{"groups": s.svc.ListGroups(u)})
+	writeJSON(w, http.StatusOK, map[string]any{"groups": s.svc.Groups(u.Username)})
 }
 
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request, u *auth.User) {
@@ -281,182 +238,117 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request, u *auth.Use
 	if !ok {
 		return
 	}
-	g, err := s.svc.CreateGroup(u, name)
+	g, err := s.svc.CreateGroup(u.Username, name)
 	if err != nil {
-		s.writeGroupErr(w, err)
+		writeErr(w, http.StatusInternalServerError, "Could not create the group")
 		return
 	}
 	writeJSON(w, http.StatusOK, g)
-}
-
-func (s *Server) getGroup(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
-		return
-	}
-	g, err := s.svc.GetGroup(u, id)
-	if err != nil {
-		s.writeGroupErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, g)
-}
-
-// internalGroupMembers resolves a personal group's internal member usernames (owner + internal
-// members) for a trusted service-to-service caller. Authenticated solely by the shared secret
-// (constant-time), never a session; "" secret fails closed with 503.
-func (s *Server) internalGroupMembers(w http.ResponseWriter, r *http.Request) {
-	if s.internalSecret == "" {
-		writeErr(w, http.StatusServiceUnavailable, "Internal API not configured")
-		return
-	}
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Contax-Internal-Secret")), []byte(s.internalSecret)) != 1 {
-		writeErr(w, http.StatusUnauthorized, "Not authenticated")
-		return
-	}
-	id := r.PathValue("id")
-	if !groupIDRe.MatchString(id) {
-		writeErr(w, http.StatusBadRequest, "Invalid group id")
-		return
-	}
-	name, usernames, ok := s.svc.GroupMemberUsernames(id)
-	if !ok {
-		writeErr(w, http.StatusNotFound, "Group not found")
-		return
-	}
-	if usernames == nil {
-		usernames = []string{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "name": name, "usernames": usernames})
 }
 
 func (s *Server) renameGroup(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
-		return
-	}
 	name, ok := decodeGroupName(w, r)
 	if !ok {
 		return
 	}
-	g, err := s.svc.RenameGroup(u, id, name)
+	g, err := s.svc.RenameGroup(u.Username, r.PathValue("id"), name)
 	if err != nil {
-		s.writeGroupErr(w, err)
+		s.writeStoreErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, g)
 }
 
 func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
-		return
-	}
-	if err := s.svc.DeleteGroup(u, id); err != nil {
-		s.writeGroupErr(w, err)
+	if err := s.svc.DeleteGroup(u.Username, r.PathValue("id")); err != nil {
+		s.writeStoreErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// groupMembers expands a group into its member contacts (mail/icaly recipient expansion).
+// groupMembers resolves a group to its member contacts — the session-side endpoint the shared
+// ContactPicker wires to onExpandGroup, and the same one contax's own group editor reads.
 func (s *Server) groupMembers(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
+	members, ok := s.svc.GroupMembers(u.Username, r.PathValue("id"))
 	if !ok {
+		writeErr(w, http.StatusNotFound, "Group not found")
 		return
 	}
-	cs, err := s.svc.ExpandGroup(u, id)
-	if err != nil {
-		s.writeGroupErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"contacts": cs})
+	writeJSON(w, http.StatusOK, map[string]any{"contacts": members})
 }
 
 func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
+	var b memberBody
+	if !decodeJSON(w, r, &b) {
 		return
 	}
-	b, ok := decodeMember(w, r)
-	if !ok {
-		return
-	}
-	g, err := s.svc.AddMember(u, id, b.Kind, b.Ref)
+	g, err := s.svc.AddGroupMember(u, r.PathValue("id"), b.Username, b.Email)
 	if err != nil {
-		s.writeGroupErr(w, err)
+		if err == contacts.ErrNotAddressable {
+			writeErr(w, http.StatusBadRequest, "That contact cannot be added to a group")
+			return
+		}
+		s.writeStoreErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, g)
 }
 
-func (s *Server) setGroupMemberRole(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
-		return
-	}
-	b, ok := decodeMember(w, r)
-	if !ok {
-		return
-	}
-	g, err := s.svc.SetMemberRole(u, id, b.Kind, b.Ref, b.Role)
-	if err != nil {
-		s.writeGroupErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, g)
-}
-
-// removeGroupMember takes kind/ref as query params (a DELETE with no body, so an email ref rides
-// the query string), and doubles as "leave" when a member removes themselves.
 func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
+	g, err := s.svc.RemoveGroupMember(u.Username, r.PathValue("id"), r.PathValue("ref"))
+	if err != nil {
+		s.writeStoreErr(w, err)
 		return
 	}
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
-	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
-	if err := s.svc.RemoveMember(u, id, kind, ref); err != nil {
-		s.writeGroupErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, g)
 }
 
-func (s *Server) transferGroup(w http.ResponseWriter, r *http.Request, u *auth.User) {
-	id, ok := groupID(w, r)
-	if !ok {
+// internalGroupMembers is the machine-to-machine endpoint: it resolves a group's internal member
+// usernames from the group id alone, authenticated solely by the shared secret (constant-time),
+// never a session. "" secret => disabled (503), so a misconfigured deploy fails closed.
+func (s *Server) internalGroupMembers(w http.ResponseWriter, r *http.Request) {
+	if s.internal == "" {
+		writeErr(w, http.StatusServiceUnavailable, "Internal API not configured")
 		return
 	}
-	var b struct {
-		Username string `json:"username"`
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get(internalSecretHeader)), []byte(s.internal)) != 1 {
+		writeErr(w, http.StatusUnauthorized, "Not authenticated")
+		return
 	}
+	usernames, ok := s.svc.InternalGroupMembers(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "Group not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"usernames": usernames})
+}
+
+// decodeGroupName reads and validates a {name} body for group create/rename.
+func decodeGroupName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var b groupBody
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&b); err != nil && err != io.EOF {
 		writeErr(w, http.StatusBadRequest, "Invalid request body")
-		return
+		return "", false
 	}
-	g, err := s.svc.TransferOwnership(u, id, b.Username)
-	if err != nil {
-		s.writeGroupErr(w, err)
-		return
+	name := strings.TrimSpace(b.Name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "A group name is required")
+		return "", false
 	}
-	writeJSON(w, http.StatusOK, g)
+	if len([]rune(name)) > 120 {
+		writeErr(w, http.StatusBadRequest, "Group name is too long")
+		return "", false
+	}
+	return name, true
 }
 
-// writeGroupErr maps the group-layer sentinels to the holistic {detail} error contract.
-func (s *Server) writeGroupErr(w http.ResponseWriter, err error) {
-	switch err {
-	case contacts.ErrNotFound:
-		writeErr(w, http.StatusNotFound, "Group not found")
-	case contacts.ErrForbidden:
-		writeErr(w, http.StatusForbidden, "Not allowed")
-	case contacts.ErrInvalid:
-		writeErr(w, http.StatusBadRequest, "Invalid request")
-	case contacts.ErrExists:
-		writeErr(w, http.StatusConflict, "Already a member")
-	default:
-		writeErr(w, http.StatusInternalServerError, "Could not complete the request")
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(v); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return false
 	}
+	return true
 }
 
 // avatarExt proxies a Gravatar image for an external contact. The email is only hashed to a fixed

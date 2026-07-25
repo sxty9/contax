@@ -35,6 +35,7 @@ detect_service_id() {
 : "${SERVICE_ADMIN_GROUP:=sudo}"                        # Linux group that confers admin
 : "${HOLISTIC_SECRET_FILE:=/etc/holistic/jwt-secret}"   # shared session-signing secret
 : "${HOLISTIC_GROUP:=holistic}"                         # group that owns the shared secret
+: "${CONTAX_INTERNAL_SECRET_FILE:=/etc/holistic/contax-internal-secret}"  # shared M2M secret (group membership)
 
 # ── derived paths (depend on the service id) ──────────────────────────────────────
 UNIT="/etc/systemd/system/${SERVICE_ID}.service"
@@ -114,9 +115,9 @@ Group=$SERVICE_USER
 Environment=HOLISTIC_SECRET_FILE=$HOLISTIC_SECRET_FILE
 # Admin = single Linux source of truth (the sudo group by default).
 Environment=$ADMIN_ENV=$SERVICE_ADMIN_GROUP
-# Shared secret authenticating service-to-service internal/ calls (icaly resolves personal-group
-# members for calendar sharing). Group-readable; provisioned by either service's setup.
-Environment=CONTAX_INTERNAL_SECRET_FILE=/etc/holistic/icaly-contax-secret
+# Shared secret guarding the machine-to-machine internal/* endpoints (group-membership resolution
+# for sibling services). Provisioned by setup; absent until then => those endpoints serve 503.
+Environment=CONTAX_INTERNAL_SECRET_FILE=$CONTAX_INTERNAL_SECRET_FILE
 ExecStart=$DAEMON_BIN --listen 127.0.0.1:$SERVICE_PORT
 Restart=on-failure
 RestartSec=2
@@ -189,14 +190,13 @@ grant_secret_access() {
   chmod 0640 "$HOLISTIC_SECRET_FILE"              # scoped to the holistic + service accounts
 }
 
-# The shared icaly↔contax secret authenticates icaly's live contax-group membership lookups (calendar
-# sharing). Group-readable so both daemons (both in the holistic group) can read it; create-if-absent
-# and idempotent, so whichever of contax/icaly runs setup first wins and the other reuses it. icaly's
-# own setup provisions the same file — installing sharing requires `./service setup` on BOTH.
-provision_contax_secret() {
-  local f=/etc/holistic/icaly-contax-secret
-  getent group "$HOLISTIC_GROUP" >/dev/null || { warn "group '$HOLISTIC_GROUP' missing — skipping contax secret"; return 0; }
-  command -v openssl >/dev/null || { warn "openssl not found — skipping contax secret"; return 0; }
+# Provision the shared secret guarding the machine-to-machine internal/* endpoints (group-membership
+# resolution). A sibling service reads the SAME file to authenticate. Generated once; left untouched
+# on repair. Owned by the holistic group so the daemon (added to it above) and callers can read it.
+provision_internal_secret() {
+  local f="$CONTAX_INTERNAL_SECRET_FILE"
+  getent group "$HOLISTIC_GROUP" >/dev/null || { warn "group '$HOLISTIC_GROUP' missing — skipping internal secret"; return 0; }
+  command -v openssl >/dev/null || { warn "openssl not found — skipping internal secret"; return 0; }
   [ -f "$f" ] || ( umask 077; openssl rand -hex 32 > "$f" )
   chgrp "$HOLISTIC_GROUP" "$f" 2>/dev/null || true
   chmod 0640 "$f"
@@ -251,7 +251,9 @@ cmd_setup() {
 
   log "granting read on the shared JWT secret..."
   grant_secret_access
-  provision_contax_secret
+
+  log "provisioning the machine-to-machine internal secret..."
+  provision_internal_secret
 
   log "configuring systemd..."
   write_unit
@@ -357,8 +359,9 @@ cmd_uninstall() {
     for g in $(declared_groups); do
       groupdel "$g" >/dev/null 2>&1 || true
     done
+    rm -f "$CONTAX_INTERNAL_SECRET_FILE"
     rm -rf "$SERVICE_APP" "/var/lib/$SERVICE_ID"
-    log "purged user, rights groups, $SERVICE_APP, /var/lib/$SERVICE_ID"
+    log "purged user, rights groups, internal secret, $SERVICE_APP, /var/lib/$SERVICE_ID"
   fi
   log "uninstalled"
 }

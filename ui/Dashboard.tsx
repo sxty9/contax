@@ -8,7 +8,6 @@ import {
   Modal,
   Panel,
   SearchField,
-  SegmentedControl,
   Stack,
   Text,
   EyeIcon,
@@ -22,14 +21,13 @@ import {
 } from '@holistic/ui';
 import type { Contact, ContactsResponse } from './types';
 import { ExternalEditor } from './ExternalEditor';
-import { GroupsTab } from './GroupsTab';
+import { GroupsPanel } from './GroupsPanel';
 
 // The contacts dashboard: every visible contact (internal — computed from shared privleg contact
 // groups — plus external, owned by the user), a hidden section, and add/edit/hide/delete actions.
 // Internal contacts can only be hidden; external contacts are fully editable and deletable.
-export function Dashboard({ user, api, ui }: ServiceContextProps) {
+export function Dashboard({ api, ui }: ServiceContextProps) {
   const q = useLiveQuery<ContactsResponse>(() => api.get<ContactsResponse>('contacts'), 15000);
-  const [tab, setTab] = useState<'contacts' | 'groups'>('contacts');
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState<{ open: boolean; contact?: Contact }>({ open: false });
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -77,20 +75,7 @@ export function Dashboard({ user, api, ui }: ServiceContextProps) {
 
   return (
     <Stack gap={4}>
-      <SegmentedControl
-        options={[
-          { value: 'contacts', label: 'Kontakte' },
-          { value: 'groups', label: 'Gruppen' },
-        ]}
-        value={tab}
-        onChange={setTab}
-        className="self-start"
-      />
-      {tab === 'groups' ? (
-        <GroupsTab user={user} api={api} ui={ui} />
-      ) : (
-        <>
-          <Stack direction="row" align="center" justify="between" gap={3} wrap>
+      <Stack direction="row" align="center" justify="between" gap={3} wrap>
         <SearchField value={search} onChange={setSearch} placeholder="Kontakte durchsuchen" className="w-72 max-w-full" />
         <Stack direction="row" align="center" gap={2} wrap>
           <Button variant="secondary" iconLeft={<EyeOffIcon className="h-4 w-4" />} onClick={() => setHiddenOpen(true)}>
@@ -127,6 +112,8 @@ export function Dashboard({ user, api, ui }: ServiceContextProps) {
           </Stack>
         )}
       </Panel>
+
+      <GroupsPanel api={api} ui={ui} />
 
       <Modal
         open={hiddenOpen}
@@ -171,8 +158,6 @@ export function Dashboard({ user, api, ui }: ServiceContextProps) {
           q.refresh();
         }}
       />
-        </>
-      )}
     </Stack>
   );
 }
