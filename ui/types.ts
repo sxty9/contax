@@ -19,3 +19,35 @@ export interface Contact {
 export interface ContactsResponse {
   contacts: Contact[];
 }
+
+// --- personal ("contax-level") contact groups ---
+
+export type GroupRole = 'owner' | 'admin' | 'member';
+
+// One resolved participant of a group as the dashboard presents it. `ref` is the stable handle used
+// by the member mutations: a username for internal members, the email for external members. The
+// synthesised owner row is included with role 'owner'.
+export interface GroupMemberView {
+  kind: 'internal' | 'external';
+  ref: string;
+  displayName: string;
+  email: string;
+  avatarUrl?: string;
+  role: GroupRole;
+}
+
+// A group with the CALLER's own role, so the UI decides which actions to offer without a second call.
+export interface Group {
+  id: string;
+  name: string;
+  owner: string; // owner username
+  role: GroupRole; // the caller's role in this group
+  members: GroupMemberView[];
+  memberCount: number;
+  created: number;
+  updated: number;
+}
+
+export interface GroupsResponse {
+  groups: Group[];
+}

@@ -50,8 +50,12 @@ func main() {
 	inst := instance.New()
 	svc := contacts.New(dir, prof, inst, st)
 
+	// Shared secret for the machine-to-machine internal/ endpoints (e.g. icaly resolving a personal
+	// group's members for calendar sharing). Absent ⇒ those endpoints fail closed (503).
+	internalSecret := readSecret("CONTAX_INTERNAL_SECRET", "CONTAX_INTERNAL_SECRET_FILE")
+
 	srv := &http.Server{
-		Handler:           api.New(v, svc).Handler(),
+		Handler:           api.New(v, svc, internalSecret).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -82,4 +86,17 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// readSecret returns a secret from the env var, else from the file named by fileEnv (trimmed).
+func readSecret(env, fileEnv string) string {
+	if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+		return v
+	}
+	if path := strings.TrimSpace(os.Getenv(fileEnv)); path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
 }

@@ -114,6 +114,9 @@ Group=$SERVICE_USER
 Environment=HOLISTIC_SECRET_FILE=$HOLISTIC_SECRET_FILE
 # Admin = single Linux source of truth (the sudo group by default).
 Environment=$ADMIN_ENV=$SERVICE_ADMIN_GROUP
+# Shared secret authenticating service-to-service internal/ calls (icaly resolves personal-group
+# members for calendar sharing). Group-readable; provisioned by either service's setup.
+Environment=CONTAX_INTERNAL_SECRET_FILE=/etc/holistic/icaly-contax-secret
 ExecStart=$DAEMON_BIN --listen 127.0.0.1:$SERVICE_PORT
 Restart=on-failure
 RestartSec=2
@@ -186,6 +189,19 @@ grant_secret_access() {
   chmod 0640 "$HOLISTIC_SECRET_FILE"              # scoped to the holistic + service accounts
 }
 
+# The shared icaly↔contax secret authenticates icaly's live contax-group membership lookups (calendar
+# sharing). Group-readable so both daemons (both in the holistic group) can read it; create-if-absent
+# and idempotent, so whichever of contax/icaly runs setup first wins and the other reuses it. icaly's
+# own setup provisions the same file — installing sharing requires `./service setup` on BOTH.
+provision_contax_secret() {
+  local f=/etc/holistic/icaly-contax-secret
+  getent group "$HOLISTIC_GROUP" >/dev/null || { warn "group '$HOLISTIC_GROUP' missing — skipping contax secret"; return 0; }
+  command -v openssl >/dev/null || { warn "openssl not found — skipping contax secret"; return 0; }
+  [ -f "$f" ] || ( umask 077; openssl rand -hex 32 > "$f" )
+  chgrp "$HOLISTIC_GROUP" "$f" 2>/dev/null || true
+  chmod 0640 "$f"
+}
+
 # ── commands ────────────────────────────────────────────────────────────────────────
 cmd_init() {
   local name="${1:-}" old="myservice"
@@ -235,6 +251,7 @@ cmd_setup() {
 
   log "granting read on the shared JWT secret..."
   grant_secret_access
+  provision_contax_secret
 
   log "configuring systemd..."
   write_unit
