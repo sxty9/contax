@@ -8,7 +8,7 @@ example ships a working **rights interface** that `privleg` can configure per us
 Browser ── https://holistic.local (Caddy, same-origin) ─┐
   ├─ /                          → holistic SPA (bundles this plugin)
   ├─ /api/*                     → holistic backend       (127.0.0.1:8770)
-  └─ /api/services/contax/*  → contaxd (Go)        (127.0.0.1:8780)
+  └─ /api/services/contax/*  → contaxd (Go)        (127.0.0.1:8777)
 ```
 
 - **Single sign-on:** the daemon validates the same holistic session (HS256 JWT in the
@@ -39,39 +39,32 @@ sudo ./service setup         # build, wire systemd + Caddy, declare rights, rebu
 After `setup`, the service appears in the holistic sidebar. Other commands: `service build`,
 `service start|stop|restart`, `service status`, `service update`, `service uninstall [--purge]`.
 
-## The rights interface (privleg)
+## API surface
 
-Admins can do everything. To offer a **non-admin** user a fine-grained right, the service
-*declares* it in `permissions/contax.json`; `privleg` then toggles it per user. Each right
-is backed 1:1 by a Linux group named `hp_*`; `setup` creates the group and the service enforces
-the right with `isAdmin || group ∈ user.groups`.
+contax serves `/api/services/contax/` behind the shared holistic session (validated from the
+`h_access` cookie — no separate login). Every signed-in user manages their OWN contacts and groups,
+so the routes need only a valid session; mutations add the CSRF double-submit guard. contax declares
+**no** fine-grained rights (`permissions/contax.json` is empty): who a user may SEE internally is
+governed centrally by privleg's `hc_*` contact groups, not by a contax permission.
 
-```jsonc
-{
-  "service": "contax", "version": 1,
-  "categories": [{
-    "id": "demo", "label": "Demo",
-    "permissions": [{
-      "id": "access", "label": "Access privileged data",
-      "group": "hp_contax_demo", "default": false
-    }]
-  }]
-}
-```
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `contacts` | the full list — internal (computed from shared `hc_*` groups) + external |
+| GET | `lookup?q=&includeGroups=1` | typeahead for the shared `ContactPicker`; groups when asked |
+| POST · PUT · DELETE | `contacts` · `contacts/{id}` | external-contact CRUD (CSRF on writes) |
+| POST | `contacts/{id}/hide` · `internal/{username}/hide` | per-user visibility (CSRF) |
+| GET · POST · PUT · DELETE | `groups` · `groups/{id}` | personal contact groups (CSRF on writes) |
+| POST · DELETE | `groups/{id}/members` · `.../members/{ref}` | curate a group's members (CSRF) |
+| GET | `groups/{id}/members` | resolve a group to its member contacts (ContactPicker expand) |
+| GET | `internal/groups/{id}/members` | **machine-to-machine**: a group's internal usernames |
 
-The group must match `^hp_[a-z0-9][a-z0-9_-]{0,27}$`; each group backs exactly one right.
-Pick `default` so a host *without* privleg is unchanged: `default:false` = admin-only until
-granted; `default:true` = granted to everyone until revoked. Enforcement is the same either
-way. The example wires this end to end:
-
-| Method | Path | Access | Demonstrates |
-|---|---|---|---|
-| GET | `info` | any signed-in user | public read |
-| GET | `data` | admin or `hp_contax_demo` | rights-gated read |
-| POST | `action` | admin or `hp_contax_demo` | rights-gated write (CSRF) |
-
-Backend enforcement is in `backend/internal/api/api.go` (the group constant lives in
-`backend/internal/rights/`); the UI mirrors it with `userHasRight` in `ui/Dashboard.tsx`.
+Personal contact **groups** are the entity contax owns for the shared `@holistic/ui` `ContactPicker`
+and for sibling services (e.g. hosuto server grants) that reference a group by id. The last route
+carries no session — it is authenticated solely by a shared secret in the `X-Contax-Internal-Secret`
+header (constant-time compare), so a caller can keep a "shared with this group" membership live.
+`setup` provisions that secret at `/etc/holistic/contax-internal-secret` (group-readable); an
+unprovisioned host serves 503 there (fail closed). Backend routing + enforcement live in
+`backend/internal/api/api.go`.
 
 ## Local development
 
@@ -93,10 +86,12 @@ UI imports are restricted to `@holistic/ui` + `react` (enforced by holistic's
 service                     single-file CLI: init / setup / build / lifecycle
 permissions/contax.json  rights manifest (drop-in for privleg)
 backend/                    Go daemon (contaxd)
-  cmd/contaxd/             entry point — listens on 127.0.0.1:8780
+  cmd/contaxd/             entry point — listens on 127.0.0.1:8777
   internal/auth/              shared-JWT validation + live group/admin resolution + CSRF
-  internal/rights/            the hp_* group(s) this service declares
   internal/api/               HTTP routes under /api/services/contax/
+  internal/contacts/          the read-model: internal (live) + external + groups, one access point
+  internal/store/             the only owned state: external contacts, hidden sets, personal groups
+  internal/directory,profile,instance,gravatar/  live readers of the shared sources (groups, profile, mail domain, avatar)
 ui/                         @holistic/ui plugin (linked into holistic/frontend/external/<id>)
 ```
 

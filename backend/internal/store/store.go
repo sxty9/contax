@@ -38,11 +38,32 @@ type ExternalContact struct {
 	Created   int64  `json:"created"`
 }
 
-// userData is one owner's slice of the store: their external contacts and the usernames of the
-// internal contacts they have chosen to hide (internal contacts can only be hidden, never deleted).
+// GroupMember references one member of a personal contact group by the entity it already is —
+// never a copy of its identity. An internal member is a holistic username; an external member is
+// the id of one of the owner's own external contacts. The member's attributes (name, address,
+// avatar) are always resolved live from that single source, exactly like an internal contact.
+type GroupMember struct {
+	Kind string `json:"kind"` // "internal" | "external"
+	Ref  string `json:"ref"`  // internal: username; external: external contact id
+}
+
+// ContactGroup is a personal, owner-curated set of contacts — the entity contax owns and that the
+// shared SDK ContactPicker and sibling services (e.g. hosuto server grants) reference by id. It
+// holds only member REFERENCES; no contact identity is duplicated here.
+type ContactGroup struct {
+	ID      string        `json:"id"`
+	Name    string        `json:"name"`
+	Members []GroupMember `json:"members"`
+	Created int64         `json:"created"`
+}
+
+// userData is one owner's slice of the store: their external contacts, the usernames of the
+// internal contacts they have chosen to hide (internal contacts can only be hidden, never deleted),
+// and their personal contact groups.
 type userData struct {
 	External       []ExternalContact `json:"external"`
 	HiddenInternal []string          `json:"hiddenInternal"`
+	Groups         []ContactGroup    `json:"groups"`
 }
 
 type state struct {
@@ -269,6 +290,179 @@ func (s *Store) SetInternalHidden(owner, username string, hidden bool) error {
 		return err
 	}
 	return nil
+}
+
+// --- personal contact groups (contax's own state) ---
+
+// ListGroups returns a deep copy of the owner's personal contact groups (creation order).
+func (s *Store) ListGroups(owner string) []ContactGroup {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneGroups(s.st.Users[owner].Groups)
+}
+
+// GetGroup returns one of the owner's groups by id. ok is false if absent.
+func (s *Store) GetGroup(owner, id string) (ContactGroup, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := groupIndex(s.st.Users[owner].Groups, id); i >= 0 {
+		return cloneGroup(s.st.Users[owner].Groups[i]), true
+	}
+	return ContactGroup{}, false
+}
+
+// FindGroup locates a group by its globally-unique id across all owners — the entry point for the
+// machine-to-machine members endpoint, which knows the group id but not who owns it.
+func (s *Store) FindGroup(id string) (owner string, g ContactGroup, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for o, ud := range s.st.Users {
+		if i := groupIndex(ud.Groups, id); i >= 0 {
+			return o, cloneGroup(ud.Groups[i]), true
+		}
+	}
+	return "", ContactGroup{}, false
+}
+
+// CreateGroup adds a new, empty personal group for the owner and returns it.
+func (s *Store) CreateGroup(owner, name string) (ContactGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := ContactGroup{ID: newGroupID(), Name: name, Created: time.Now().Unix()}
+	next := append(append([]ContactGroup{}, s.st.Users[owner].Groups...), g)
+	if err := s.putGroups(owner, next); err != nil {
+		return ContactGroup{}, err
+	}
+	return g, nil
+}
+
+// RenameGroup replaces a group's name. ErrNotFound if absent.
+func (s *Store) RenameGroup(owner, id, name string) (ContactGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := append([]ContactGroup{}, s.st.Users[owner].Groups...)
+	i := groupIndex(next, id)
+	if i < 0 {
+		return ContactGroup{}, ErrNotFound
+	}
+	next[i].Name = name
+	if err := s.putGroups(owner, next); err != nil {
+		return ContactGroup{}, err
+	}
+	return cloneGroup(next[i]), nil
+}
+
+// DeleteGroup removes one personal group. ErrNotFound if absent.
+func (s *Store) DeleteGroup(owner, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.st.Users[owner].Groups
+	next := make([]ContactGroup, 0, len(src))
+	found := false
+	for _, g := range src {
+		if g.ID == id {
+			found = true
+			continue
+		}
+		next = append(next, g)
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return s.putGroups(owner, next)
+}
+
+// AddGroupMember adds a member reference to a group, idempotent on (kind, ref). ErrNotFound if the
+// group is absent. The caller is responsible for validating that the reference is one the owner may
+// address (an internal user they can see, or one of their own external contacts).
+func (s *Store) AddGroupMember(owner, id string, m GroupMember) (ContactGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := append([]ContactGroup{}, s.st.Users[owner].Groups...)
+	i := groupIndex(next, id)
+	if i < 0 {
+		return ContactGroup{}, ErrNotFound
+	}
+	members := append([]GroupMember{}, next[i].Members...)
+	for _, e := range members {
+		if e.Kind == m.Kind && e.Ref == m.Ref {
+			next[i].Members = members
+			return cloneGroup(next[i]), nil // already a member
+		}
+	}
+	next[i].Members = append(members, m)
+	if err := s.putGroups(owner, next); err != nil {
+		return ContactGroup{}, err
+	}
+	return cloneGroup(next[i]), nil
+}
+
+// RemoveGroupMember drops every member whose ref matches (kinds share one id space in practice, and
+// a stale ref simply matches nothing). ErrNotFound if the group is absent.
+func (s *Store) RemoveGroupMember(owner, id, ref string) (ContactGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := append([]ContactGroup{}, s.st.Users[owner].Groups...)
+	i := groupIndex(next, id)
+	if i < 0 {
+		return ContactGroup{}, ErrNotFound
+	}
+	kept := make([]GroupMember, 0, len(next[i].Members))
+	for _, e := range next[i].Members {
+		if e.Ref == ref {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	next[i].Members = kept
+	if err := s.putGroups(owner, next); err != nil {
+		return ContactGroup{}, err
+	}
+	return cloneGroup(next[i]), nil
+}
+
+// putGroups swaps in the owner's new group slice and persists atomically, rolling back the
+// in-memory change if the write fails. The caller must hold s.mu.
+func (s *Store) putGroups(owner string, next []ContactGroup) error {
+	ud := s.st.Users[owner]
+	prev := ud.Groups
+	ud.Groups = next
+	s.st.Users[owner] = ud
+	if err := s.save(); err != nil {
+		ud.Groups = prev
+		s.st.Users[owner] = ud
+		return err
+	}
+	return nil
+}
+
+func groupIndex(gs []ContactGroup, id string) int {
+	for i := range gs {
+		if gs[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func cloneGroup(g ContactGroup) ContactGroup {
+	g.Members = append([]GroupMember{}, g.Members...)
+	return g
+}
+
+func cloneGroups(src []ContactGroup) []ContactGroup {
+	out := make([]ContactGroup, len(src))
+	for i, g := range src {
+		out[i] = cloneGroup(g)
+	}
+	return out
+}
+
+// newGroupID returns a short, unguessable, prefixed id for a personal contact group.
+func newGroupID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "grp-" + hex.EncodeToString(b[:])
 }
 
 // newID returns a short, unguessable id for an external contact.
