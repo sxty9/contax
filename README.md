@@ -19,13 +19,13 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
 
 ## Prerequisites
 
-The [holistic](https://github.com/sxty9/holistic) repo must be present **as a sibling**
+The [holistic](https://github.com/<org>/holistic) repo must be present **as a sibling**
 (`../holistic`) with the dashboard installed — it provides the `@holistic/ui` SDK and the
 SPA that bundles this plugin.
 
 ```
-git clone git@github.com:sxty9/holistic.git
-git clone git@github.com:sxty9/holistic-service-template.git contax
+git clone git@github.com:<org>/holistic.git
+git clone git@github.com:<org>/holistic-service-template.git contax
 ```
 
 ## Quickstart
@@ -104,7 +104,7 @@ ui/                         @holistic/ui plugin (linked into holistic/frontend/e
 
 This template escalates nothing. If your service must perform OS-level writes, follow the
 holistic pattern: a narrow `/usr/local/sbin` wrapper allow-listed in `sudoers.d`, invoked via
-`sudo -n`, with `NoNewPrivileges=false` in the unit (see `sxty9/hostek` for a worked example).
+`sudo -n`, with `NoNewPrivileges=false` in the unit (see `<org>/hostek` for a worked example).
 
 ## License
 
