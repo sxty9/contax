@@ -212,7 +212,6 @@ function GroupEditor({
       setStaging([]);
       void loadMembers(group.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group?.id]);
 
   async function loadMembers(id: string) {
