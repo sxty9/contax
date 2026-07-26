@@ -64,19 +64,24 @@ func (d *Directory) Members() []string {
 	return names
 }
 
-// Groups returns a user's Linux groups, read live from the OS and cached for 30s.
+// Groups returns a user's Linux groups, read live from the OS and cached for 30s. The return is
+// always a fresh copy: the cache is a shared pool, so it never hands out a reference to its own
+// slice. A caller mutating the returned value would otherwise change what the next reader observes —
+// an observable intermediate state in shared storage. This mirrors the isolation the owned store
+// gives every value it returns.
 func (d *Directory) Groups(username string) []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if e, ok := d.cache[username]; ok && time.Since(e.at) < 30*time.Second {
-		return e.groups
+	e, ok := d.cache[username]
+	if !ok || time.Since(e.at) >= 30*time.Second {
+		var groups []string
+		if out, err := exec.Command("id", "-nG", username).Output(); err == nil {
+			groups = strings.Fields(string(out))
+		}
+		e = groupEntry{groups: groups, at: time.Now()}
+		d.cache[username] = e
 	}
-	var groups []string
-	if out, err := exec.Command("id", "-nG", username).Output(); err == nil {
-		groups = strings.Fields(string(out))
-	}
-	d.cache[username] = groupEntry{groups: groups, at: time.Now()}
-	return groups
+	return append([]string(nil), e.groups...)
 }
 
 // ContactGroups returns the set of a user's contact-visibility groups (the hc_* subset).
