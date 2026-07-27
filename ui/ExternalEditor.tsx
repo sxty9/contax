@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Field, Input, Modal, Stack, type ServiceContextProps } from '@holistic/ui';
+import { Button, Field, Input, Modal, Stack, useT, type ServiceContextProps } from '@holistic/ui';
 import type { Contact } from './types';
 
 // The add / edit dialog for an EXTERNAL contact. Internal contacts are never edited here — their
@@ -20,6 +20,7 @@ export function ExternalEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const [nickname, setNickname] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -39,7 +40,7 @@ export function ExternalEditor({
 
   async function save() {
     if (!email.trim()) {
-      ui.toast({ title: 'Eine E-Mail-Adresse ist erforderlich', variant: 'error' });
+      ui.toast({ title: t('contax.emailRequired'), variant: 'error' });
       return;
     }
     setBusy(true);
@@ -49,7 +50,7 @@ export function ExternalEditor({
       else await api.post('contacts', body);
       onSaved();
     } catch (e) {
-      ui.toast({ title: 'Speichern fehlgeschlagen', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('contax.saveFailed'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
@@ -61,32 +62,32 @@ export function ExternalEditor({
       onOpenChange={(o) => {
         if (!o) onClose();
       }}
-      title={editing ? 'Kontakt bearbeiten' : 'Externen Kontakt hinzufügen'}
+      title={editing ? t('contax.editContact') : t('contax.addExternalContact')}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Abbrechen
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" loading={busy} onClick={save}>
-            Speichern
+            {t('contax.save')}
           </Button>
         </>
       }
     >
       <Stack gap={3}>
-        <Field label="Nickname">
+        <Field label={t('contax.nickname')}>
           <Input value={nickname} onChange={(e) => setNickname(e.target.value)} />
         </Field>
         <Stack direction="row" gap={3}>
-          <Field label="Vorname" className="flex-1">
+          <Field label={t('contax.firstName')} className="flex-1">
             <Input value={firstName} onChange={(e) => setFirstName(e.target.value)} />
           </Field>
-          <Field label="Nachname" className="flex-1">
+          <Field label={t('contax.lastName')} className="flex-1">
             <Input value={lastName} onChange={(e) => setLastName(e.target.value)} />
           </Field>
         </Stack>
-        <Field label="E-Mail">
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@provider.de" />
+        <Field label={t('contax.email')}>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={t('contax.emailPlaceholder')} />
         </Field>
       </Stack>
     </Modal>

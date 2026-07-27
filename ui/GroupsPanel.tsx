@@ -18,6 +18,7 @@ import {
   TrashIcon,
   UserIcon,
   useLiveQuery,
+  useT,
   type ContactOption,
   type ServiceContextProps,
 } from '@holistic/ui';
@@ -30,6 +31,7 @@ type Ui = ServiceContextProps['ui'];
 // ContactPicker and sibling services; here the user curates them. Members are added through the very
 // same SDK ContactPicker other services use, fed by contax's own lookup — one access point, reused.
 export function GroupsPanel({ api, ui }: { api: Api; ui: Ui }) {
+  const t = useT();
   const q = useLiveQuery<GroupsResponse>(() => api.get<GroupsResponse>('groups'), 30000);
   const groups = q.data?.groups ?? [];
   const [creating, setCreating] = useState(false);
@@ -37,36 +39,36 @@ export function GroupsPanel({ api, ui }: { api: Api; ui: Ui }) {
 
   async function remove(g: GroupSummary) {
     const ok = await ui.confirm({
-      title: `${g.name} löschen?`,
-      description: 'Die Gruppe wird entfernt. Die Kontakte selbst bleiben erhalten.',
+      title: t('contax.deleteTitle', { name: g.name }),
+      description: t('contax.deleteGroupBody'),
       danger: true,
-      confirmLabel: 'Löschen',
+      confirmLabel: t('common.delete'),
     });
     if (!ok) return;
     try {
       await api.del(`groups/${encodeURIComponent(g.id)}`);
       q.refresh();
-      ui.toast({ title: 'Gelöscht', variant: 'success' });
+      ui.toast({ title: t('contax.deleted'), variant: 'success' });
     } catch (e) {
-      ui.toast({ title: 'Löschen fehlgeschlagen', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('contax.deleteFailed'), description: (e as Error).message, variant: 'error' });
     }
   }
 
   return (
     <Panel
-      title="Gruppen"
+      title={t('contax.groups')}
       className="overflow-hidden"
       actions={
         <Button variant="secondary" iconLeft={<PlusIcon className="h-4 w-4" />} onClick={() => setCreating(true)}>
-          Gruppe erstellen
+          {t('contax.createGroup')}
         </Button>
       }
     >
       {groups.length === 0 ? (
         <EmptyState
           icon={<UserIcon />}
-          title="Noch keine Gruppen"
-          description={q.loading ? 'Lädt…' : 'Fasse Kontakte zu Gruppen zusammen, um sie überall gemeinsam zu adressieren.'}
+          title={t('contax.noGroupsTitle')}
+          description={q.loading ? t('contax.loading') : t('contax.noGroupsBody')}
         />
       ) : (
         <Stack gap={0}>
@@ -83,14 +85,12 @@ export function GroupsPanel({ api, ui }: { api: Api; ui: Ui }) {
                   {g.name}
                 </Text>
               </Stack>
-              <Badge variant="neutral">
-                {g.memberCount} {g.memberCount === 1 ? 'Mitglied' : 'Mitglieder'}
-              </Badge>
+              <Badge variant="neutral">{t('contax.memberCount', { count: g.memberCount })}</Badge>
               <Stack direction="row" align="center" gap={1}>
-                <IconButton label="Mitglieder bearbeiten" size="sm" onClick={() => setEditing(g)}>
+                <IconButton label={t('contax.editMembers')} size="sm" onClick={() => setEditing(g)}>
                   <PencilIcon className="h-4 w-4" />
                 </IconButton>
-                <IconButton label="Löschen" size="sm" onClick={() => remove(g)}>
+                <IconButton label={t('common.delete')} size="sm" onClick={() => remove(g)}>
                   <TrashIcon className="h-4 w-4" />
                 </IconButton>
               </Stack>
@@ -136,6 +136,7 @@ function CreateGroupModal({
   onClose: () => void;
   onCreated: (g: GroupSummary) => void;
 }) {
+  const t = useT();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -146,7 +147,7 @@ function CreateGroupModal({
   async function create() {
     const n = name.trim();
     if (!n) {
-      ui.toast({ title: 'Ein Gruppenname ist erforderlich', variant: 'error' });
+      ui.toast({ title: t('contax.groupNameRequired'), variant: 'error' });
       return;
     }
     setBusy(true);
@@ -154,7 +155,7 @@ function CreateGroupModal({
       const g = await api.post<GroupSummary>('groups', { name: n });
       onCreated(g);
     } catch (e) {
-      ui.toast({ title: 'Erstellen fehlgeschlagen', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('contax.createFailed'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
@@ -164,20 +165,20 @@ function CreateGroupModal({
     <Modal
       open={open}
       onOpenChange={(o) => !o && onClose()}
-      title="Neue Gruppe"
+      title={t('contax.newGroup')}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Abbrechen
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" loading={busy} onClick={create}>
-            Erstellen
+            {t('common.create')}
           </Button>
         </>
       }
     >
-      <Field label="Name">
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="z. B. Familie" />
+      <Field label={t('contax.name')}>
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('contax.groupNamePlaceholder')} />
       </Field>
     </Modal>
   );
@@ -201,6 +202,7 @@ function GroupEditor({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [name, setName] = useState('');
   const [members, setMembers] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(false);
@@ -234,7 +236,7 @@ function GroupEditor({
       await api.put(`groups/${encodeURIComponent(group.id)}`, { name: n });
       onChanged();
     } catch (e) {
-      ui.toast({ title: 'Umbenennen fehlgeschlagen', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('contax.renameFailed'), description: (e as Error).message, variant: 'error' });
     }
   }
 
@@ -262,7 +264,11 @@ function GroupEditor({
           email: opt.email ?? '',
         });
       } catch (e) {
-        ui.toast({ title: `${opt.displayName || opt.email} nicht hinzugefügt`, description: (e as Error).message, variant: 'error' });
+        ui.toast({
+          title: t('contax.memberNotAdded', { name: opt.displayName || opt.email || '' }),
+          description: (e as Error).message,
+          variant: 'error',
+        });
       }
     }
     await loadMembers(group.id);
@@ -277,24 +283,24 @@ function GroupEditor({
       await loadMembers(group.id);
       onChanged();
     } catch (e) {
-      ui.toast({ title: 'Entfernen fehlgeschlagen', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('contax.removeFailed'), description: (e as Error).message, variant: 'error' });
     }
   }
 
   return (
-    <Modal open={open} onOpenChange={(o) => !o && onClose()} title="Gruppe bearbeiten" size="lg">
+    <Modal open={open} onOpenChange={(o) => !o && onClose()} title={t('contax.editGroup')} size="lg">
       <Stack gap={4}>
-        <Field label="Name">
+        <Field label={t('contax.name')}>
           <Input value={name} onChange={(e) => setName(e.target.value)} onBlur={saveName} />
         </Field>
 
-        <Field label="Mitglied hinzufügen">
+        <Field label={t('contax.addMember')}>
           <ContactPicker
             value={staging}
             onChange={addPicked}
             onSearch={search}
             allowFreeText={false}
-            placeholder="Kontakt suchen"
+            placeholder={t('contax.searchContacts')}
           />
         </Field>
 
@@ -304,7 +310,7 @@ function GroupEditor({
               <Spinner className="h-5 w-5" />
             </Stack>
           ) : members.length === 0 ? (
-            <EmptyState icon={<UserIcon />} title="Noch keine Mitglieder" description="Füge oben Kontakte hinzu." />
+            <EmptyState icon={<UserIcon />} title={t('contax.noMembersTitle')} description={t('contax.noMembersBody')} />
           ) : (
             members.map((c) => (
               <Stack
@@ -323,7 +329,7 @@ function GroupEditor({
                     {c.email}
                   </Text>
                 </Stack>
-                <IconButton label="Entfernen" size="sm" onClick={() => removeMember(c)}>
+                <IconButton label={t('common.remove', { name: c.displayName })} size="sm" onClick={() => removeMember(c)}>
                   <TrashIcon className="h-4 w-4" />
                 </IconButton>
               </Stack>

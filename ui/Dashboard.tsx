@@ -17,6 +17,7 @@ import {
   TrashIcon,
   UserIcon,
   useLiveQuery,
+  useT,
   type ServiceContextProps,
 } from '@holistic/ui';
 import type { Contact, ContactsResponse } from './types';
@@ -27,6 +28,7 @@ import { GroupsPanel } from './GroupsPanel';
 // groups — plus external, owned by the user), a hidden section, and add/edit/hide/delete actions.
 // Internal contacts can only be hidden; external contacts are fully editable and deletable.
 export function Dashboard({ api, ui }: ServiceContextProps) {
+  const t = useT();
   const q = useLiveQuery<ContactsResponse>(() => api.get<ContactsResponse>('contacts'), 15000);
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState<{ open: boolean; contact?: Contact }>({ open: false });
@@ -49,7 +51,7 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
       q.refresh();
       ui.toast({ title: okMsg, variant: 'success' });
     } catch (e) {
-      ui.toast({ title: 'Aktion fehlgeschlagen', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('contax.actionFailed'), description: (e as Error).message, variant: 'error' });
     }
   }
 
@@ -59,44 +61,40 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
       c.kind === 'internal'
         ? `internal/${encodeURIComponent(c.username ?? c.id)}/${verb}`
         : `contacts/${encodeURIComponent(c.id)}/${verb}`;
-    return run(() => api.post(path), hide ? 'Ausgeblendet' : 'Eingeblendet');
+    return run(() => api.post(path), hide ? t('contax.hidden') : t('contax.shown'));
   }
 
   async function remove(c: Contact) {
     const ok = await ui.confirm({
-      title: `${c.displayName} löschen?`,
-      description: 'Der externe Kontakt wird dauerhaft entfernt.',
+      title: t('contax.deleteTitle', { name: c.displayName }),
+      description: t('contax.deleteContactBody'),
       danger: true,
-      confirmLabel: 'Löschen',
+      confirmLabel: t('common.delete'),
     });
     if (!ok) return;
-    return run(() => api.del(`contacts/${encodeURIComponent(c.id)}`), 'Gelöscht');
+    return run(() => api.del(`contacts/${encodeURIComponent(c.id)}`), t('contax.deleted'));
   }
 
   return (
     <Stack gap={4}>
       <Stack direction="row" align="center" justify="between" gap={3} wrap>
-        <SearchField value={search} onChange={setSearch} placeholder="Kontakte durchsuchen" className="w-72 max-w-full" />
+        <SearchField value={search} onChange={setSearch} placeholder={t('contax.searchContacts')} className="w-72 max-w-full" />
         <Stack direction="row" align="center" gap={2} wrap>
           <Button variant="secondary" iconLeft={<EyeOffIcon className="h-4 w-4" />} onClick={() => setHiddenOpen(true)}>
-            Ausgeblendet{hidden.length ? ` (${hidden.length})` : ''}
+            {t('contax.hidden')}{hidden.length ? ` (${hidden.length})` : ''}
           </Button>
           <Button variant="primary" iconLeft={<PlusIcon className="h-4 w-4" />} onClick={() => setEditor({ open: true })}>
-            Externen Kontakt hinzufügen
+            {t('contax.addExternalContact')}
           </Button>
         </Stack>
       </Stack>
 
-      <Panel title="Kontakte" className="overflow-hidden">
+      <Panel title={t('contax.contacts')} className="overflow-hidden">
         {visible.length === 0 ? (
           <EmptyState
             icon={<UserIcon />}
-            title={search ? 'Keine Treffer' : 'Noch keine Kontakte'}
-            description={
-              q.loading
-                ? 'Lädt…'
-                : 'Interne Kontakte erscheinen automatisch, sobald ihr eine Kontaktgruppe teilt. Externe kannst du oben hinzufügen.'
-            }
+            title={search ? t('common.noMatches') : t('contax.noContactsTitle')}
+            description={q.loading ? t('contax.loading') : t('contax.noContactsBody')}
           />
         ) : (
           <Stack gap={0}>
@@ -118,15 +116,15 @@ export function Dashboard({ api, ui }: ServiceContextProps) {
       <Modal
         open={hiddenOpen}
         onOpenChange={(o) => !o && setHiddenOpen(false)}
-        title="Ausgeblendete Kontakte"
+        title={t('contax.hiddenContacts')}
         size="lg"
         bodyClassName="p-0"
       >
         {hidden.length === 0 ? (
           <EmptyState
             icon={<EyeOffIcon />}
-            title="Keine ausgeblendeten Kontakte"
-            description="Aus- und wieder eingeblendete interne und externe Kontakte erscheinen hier."
+            title={t('contax.noHiddenTitle')}
+            description={t('contax.noHiddenBody')}
           />
         ) : (
           <Stack gap={0}>
@@ -181,6 +179,7 @@ function ContactRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const t = useT();
   return (
     <Stack direction="row" align="center" gap={3} className="border-b border-separator px-4 py-2.5 last:border-b-0">
       <Avatar name={c.displayName} src={c.avatarUrl || undefined} size={36} />
@@ -189,7 +188,9 @@ function ContactRow({
           <Text weight="medium" truncate>
             {c.displayName}
           </Text>
-          <Badge variant={c.kind === 'internal' ? 'accent' : 'neutral'}>{c.kind === 'internal' ? 'Intern' : 'Extern'}</Badge>
+          <Badge variant={c.kind === 'internal' ? 'accent' : 'neutral'}>
+            {c.kind === 'internal' ? t('contax.internal') : t('contax.external')}
+          </Badge>
         </Stack>
         <Text variant="footnote" color="secondary" truncate>
           {c.email}
@@ -197,21 +198,21 @@ function ContactRow({
       </Stack>
       <Stack direction="row" align="center" gap={1}>
         {c.editable && (
-          <IconButton label="Bearbeiten" size="sm" onClick={onEdit}>
+          <IconButton label={t('contax.edit')} size="sm" onClick={onEdit}>
             <PencilIcon className="h-4 w-4" />
           </IconButton>
         )}
         {hiddenSection ? (
-          <IconButton label="Einblenden" size="sm" onClick={onShow}>
+          <IconButton label={t('contax.show')} size="sm" onClick={onShow}>
             <EyeIcon className="h-4 w-4" />
           </IconButton>
         ) : (
-          <IconButton label="Ausblenden" size="sm" onClick={onHide}>
+          <IconButton label={t('contax.hide')} size="sm" onClick={onHide}>
             <EyeOffIcon className="h-4 w-4" />
           </IconButton>
         )}
         {c.editable && (
-          <IconButton label="Löschen" size="sm" onClick={onDelete}>
+          <IconButton label={t('common.delete')} size="sm" onClick={onDelete}>
             <TrashIcon className="h-4 w-4" />
           </IconButton>
         )}
