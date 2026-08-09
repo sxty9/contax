@@ -1,4 +1,4 @@
-import { UserIcon, type ServicePlugin } from '@holistic/ui';
+import { UserIcon, type ServicePlugin } from '@holisdk/ui';
 import { Dashboard } from './Dashboard';
 
 // contax's dashboard plugin. Linked into holistic/frontend/external/contax at install time and
