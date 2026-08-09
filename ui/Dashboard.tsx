@@ -18,7 +18,7 @@ import {
   UserIcon,
   useLiveQuery,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { Contact, ContactsResponse } from './types';
 import { ExternalEditor } from './ExternalEditor';
 import { GroupsPanel } from './GroupsPanel';

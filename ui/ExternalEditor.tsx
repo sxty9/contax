@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Field, Input, Modal, Stack, type ServiceContextProps } from '@holistic/ui';
+import { Button, Field, Input, Modal, Stack, type ServiceContextProps } from '@holisdk/ui';
 import type { Contact } from './types';
 
 // The add / edit dialog for an EXTERNAL contact. Internal contacts are never edited here — their
