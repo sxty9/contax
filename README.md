@@ -1,7 +1,7 @@
 # holistic-service-template
 
 A starting point for a **holistic service**: a Go backend behind the holistic Caddy proxy
-plus a dashboard plugin built on the **`@holistic/ui`** SDK (consumed, never vendored). The
+plus a dashboard plugin built on the **`@holisdk/ui`** SDK (consumed, never vendored). The
 example ships a working **rights interface** that `privleg` can configure per user.
 
 ```
@@ -20,7 +20,7 @@ Browser ── https://holistic.local (Caddy, same-origin) ─┐
 ## Prerequisites
 
 The [holistic](https://github.com/<org>/holistic) repo must be present **as a sibling**
-(`../holistic`) with the dashboard installed — it provides the `@holistic/ui` SDK and the
+(`../holistic`) with the dashboard installed — it provides the `@holisdk/ui` SDK and the
 SPA that bundles this plugin.
 
 ```
@@ -58,7 +58,7 @@ governed centrally by privleg's `hc_*` contact groups, not by a contax permissio
 | GET | `groups/{id}/members` | resolve a group to its member contacts (ContactPicker expand) |
 | GET | `internal/groups/{id}/members` | **machine-to-machine**: a group's internal usernames |
 
-Personal contact **groups** are the entity contax owns for the shared `@holistic/ui` `ContactPicker`
+Personal contact **groups** are the entity contax owns for the shared `@holisdk/ui` `ContactPicker`
 and for sibling services (e.g. hosuto server grants) that reference a group by id. The last route
 carries no session — it is authenticated solely by a shared secret in the `X-Contax-Internal-Secret`
 header (constant-time compare), so a caller can keep a "shared with this group" membership live.
@@ -77,7 +77,7 @@ ln -sfn "$PWD/ui" ../holistic/frontend/external/contax
 ( cd ../holistic/frontend && pnpm --filter @holistic/app dev )   # http://localhost:5173
 ```
 
-UI imports are restricted to `@holistic/ui` + `react` (enforced by holistic's
+UI imports are restricted to `@holisdk/ui` + `react` (enforced by holistic's
 `eslint.services.cjs` at SPA build time).
 
 ## Layout
@@ -92,7 +92,7 @@ backend/                    Go daemon (contaxd)
   internal/contacts/          the read-model: internal (live) + external + groups, one access point
   internal/store/             the only owned state: external contacts, hidden sets, personal groups
   internal/directory,profile,instance,gravatar/  live readers of the shared sources (groups, profile, mail domain, avatar)
-ui/                         @holistic/ui plugin (linked into holistic/frontend/external/<id>)
+ui/                         @holisdk/ui plugin (linked into holistic/frontend/external/<id>)
 ```
 
 ### Going further: privileged actions
