@@ -20,7 +20,7 @@ import {
   useLiveQuery,
   type ContactOption,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { Contact, ContactsResponse, GroupSummary, GroupsResponse } from './types';
 
 type Api = ServiceContextProps['api'];
